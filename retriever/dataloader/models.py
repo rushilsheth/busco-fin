@@ -1,12 +1,4 @@
-# so we will have childs for elasticsearch and vectorstore
-
-from langchain_community.document_loaders import UnstructuredHTMLLoader
-from langchain_community.document_transformers import Html2TextTransformer
-
 import os
-import logging
-logging.getLogger().setLevel(logging.INFO)
-logging.getLogger().setLevel(logging.ERROR)
 
 from abc import ABC, abstractmethod
 import dotenv
@@ -17,6 +9,11 @@ from sec_api import RenderApi
 
 import pandas as pd
 from time import sleep
+
+import sys
+from retriever.util import get_logger
+
+logger = get_logger()
 
 class DataLoader():
     dotenv.load_dotenv()
@@ -52,21 +49,20 @@ class DataLoader():
         Returns:
         - None
         '''
-        logging.info('Downloading filings...')
+        logger.info('Downloading filings...')
         companies_info = pd.DataFrame(columns=self.company_columns)
         documents_info = pd.DataFrame(columns=self.document_columns)
         for company in self.COMPANY_NAMES:
             # hack to avoid rate limits
             sleep(5)
             for doc_type in self.DOC_TYPES:
-                logging.info(f'Downloading {doc_type} filings for {company}...')
+                logger.info(f'Downloading {doc_type} filings for {company}...')
                 company_info, documents = self._download_filings_for_company_and_doc_type(company, doc_type)
                 # if None for either, remove directory
                 if company_info is None or documents is None:
                     continue
                 companies_info = pd.concat([companies_info, company_info], ignore_index=True)
                 documents_info = pd.concat([documents_info, documents], ignore_index=True)
-        
         companies_info.to_csv(os.path.join(self.base_dest, 'companies_df.csv'), index=False)
         documents_info.to_csv(os.path.join(self.base_dest, 'document_info.csv'), index=False)
 
@@ -77,7 +73,7 @@ class DataLoader():
         if not os.path.exists(os.path.join(self.company_dir_path(company), doc_type)):
             os.makedirs(os.path.join(self.company_dir_path(company), doc_type))
         else:
-            logging.info(f'{company} {doc_type} already exists')
+            logger.info(f'{company} {doc_type} already exists')
             return None, None
         
         query = {
@@ -101,23 +97,161 @@ class DataLoader():
                 with open(localFilePath, 'w', encoding='utf-8') as file:
                     file.write(filing_html)
         except Exception as e:
-            logging.error(f'Error downloading filings for {company} {doc_type}: {e}')
+            logger.error(f'Error downloading filings for {company} {doc_type}: {e}')
             if company_info is None or document_info is None:
                 return None, None
             return company_info, document_info
         return company_info, document_info
+
+import subprocess
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import udf, explode, lit
+from pyspark.sql.types import ArrayType, StructType, StructField, StringType
+from bs4 import BeautifulSoup
+from elasticsearch import Elasticsearch
+
+import subprocess
+from subprocess import Popen
+import time
+import signal
+import os
+
+from langchain_community.document_loaders import UnstructuredHTMLLoader
+from langchain_community.document_transformers import Html2TextTransformer
+
+
+class ElasticsearchService():
+    def __init__(self, es_nodes='localhost', es_port='9200', es_index='documents_index'):
+        self.es_nodes = es_nodes
+        self.es_port = es_port
+        self.es_index = es_index
+        self.es_home = "/Users/rushilsheth/Documents/elasticsearch"  # Path to your Elasticsearch 
+        self.es_bin = self.es_home + "/bin/elasticsearch"  # Path to the Elasticsearch executable
     
-    def load_single_form(self, file_path):
-        '''load a single form'''
+    def start_elasticsearch(self):
+            """
+            Starts Elasticsearch using subprocess.
+            """
+            try:
+                print("Starting Elasticsearch...")
+                self.es_process = Popen([self.es_bin], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                print("Elasticsearch is starting. Please wait a few moments before it becomes available.")
+                time.sleep(30)  # Wait for Elasticsearch to start
+            except Exception as e:
+                print(f"Failed to start Elasticsearch: {e}")
+    
+    # is this necessary??
+    def create_index(self, index_name, mapping):
+        if not self.es_process.indices.exists(index=index_name):
+            self.es_process.indices.create(index=index_name, body=mapping, ignore=400)
+
+
+    def stop_elasticsearch(self):
+        """
+        Stops the Elasticsearch process.
+        """
+        if self.es_process:
+            print("Stopping Elasticsearch...")
+            self.es_process.terminate()  # Sends SIGTERM
+            try:
+                self.es_process.wait(timeout=10)  # Wait for the process to terminate
+            except subprocess.TimeoutExpired:
+                print("Elasticsearch did not terminate gracefully; forcing it to stop.")
+                self.es_process.kill()  # Force terminate if not stopped after timeout
+            print("Elasticsearch has been stopped.")
+        else:
+            print("Elasticsearch process is not running.")
+
+class ElasticsearchDataLoader(DataLoader):
+    def __init__(self):
+        super().__init__()
+        self.index_name = 'sec_filings'
+        self.es_client = ElasticsearchService(es_index=self.index_name)
+        self.mapping = {
+            "mappings": {
+                "properties": {
+                    "ticker": {"type": "keyword"},
+                    "formType": {"type": "keyword"},
+                    "description": {"type": "text"},
+                    "documentUrl": {"type": "keyword"},
+                    "filedAt": {"type": "date"},
+                    "periodOfReport": {"type": "date"},
+                    "localFilePath": {"type": "keyword"},
+                    "cik": {"type": "keyword"},
+                    "companyName": {"type": "text"},
+                    "stateOfIncorporation": {"type": "keyword"},
+                    "fiscalYearEnd": {"type": "integer"},
+                    "sic": {"type": "keyword"}
+                }
+            }
+        }
+        
+        self.initialize_spark_session()
+        #self.start_and_prep_service()
+    
+    def initialize_spark_session(self):
+        self.spark = SparkSession.builder \
+                .appName("Document Processing") \
+                .config("spark.master", "local[*]") \
+                .config("spark.jars", "elasticsearch-hadoop-8.12.1.jar") \
+                .config("spark.es.nodes", self.es_client.es_nodes) \
+                .config("spark.jars", "elasticsearch-spark-30_2.12-8.12.1.jar") \
+                .getOrCreate()
+
+        time.sleep(10)  # Wait for the Elasticsearch container to start
+
+    def start_and_prep_service(self):
+        self.es_client.start_elasticsearch()
+        self.es_client.create_index(self.index_name, self.mapping)
+    
+    def extract_metadata(self, file_path, doc_df, company_df):
+        doc_row = doc_df.loc[doc_df['localFilePath'] == file_path]
+        metadata = doc_row.to_dict(orient='records')[0]
+        metadata.update(company_df.loc[company_df['ticker'] == doc_row['ticker'].values[0]].to_dict(orient='records')[0])
+        return metadata
+
+    def load_documents(self):
+        # Load metadata CSVs
+        doc_df = pd.read_csv(f'{self.base_dest}document_info.csv')
+        company_df = pd.read_csv(f'{self.base_dest}companies_df.csv')
+
+        # List to hold all document data
+        documents_data = []
+
+        # Crawl the directory for .htm files
+        for root, dirs, files in os.walk(self.base_dest):
+            for file in files:
+                if file.endswith(".htm"):
+                    file_path = os.path.join(root, file)
+                    # Extract metadata
+                    metadata = self.extract_metadata(file_path, doc_df, company_df)
+                    # Convert HTML to text
+                    html_text = self.html_to_text(file_path)
+                    # Combine metadata and text content
+                    documents_data.append((metadata, html_text))
+        
+        # Convert list to RDD and then to DataFrame
+        schema = StructType([
+            StructField("metadata", StringType(), True),
+            StructField("text", StringType(), True)
+        ])
+        rdd = self.spark.sparkContext.parallelize(documents_data)
+        documents_df = self.spark.createDataFrame(rdd, schema)
+        return documents_df
+        # # Load the DataFrame to Elasticsearch
+        # self.load_data(documents_df)
+    
+    # add method to load data from edgar_docs to elasticsearch
+    def load_data_to_elasticsearch(self):
+        documents_info = pd.read_csv(os.path.join(self.base_dest, 'document_info.csv'))
+        documents_info = documents_info.to_dict(orient='records')
+        for document in documents_info:
+            self.es_client.es_process.index(index=self.index_name, body=document)
+        print("Data has been loaded into Elasticsearch.")
+    
+    def html_to_text(self, file_path):
         loader = UnstructuredHTMLLoader(file_path)
         doc = loader.load()
-        
-
-    def load_forms(self):
-        pass
-    
-    @abstractmethod
-    def populate_datastore(self):
-        raise NotImplementedError()
-
-
+        html2text = Html2TextTransformer()
+        docs_transformed = html2text.transform_documents(doc)
+        return docs_transformed[0].page_content
