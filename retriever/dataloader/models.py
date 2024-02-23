@@ -124,11 +124,13 @@ from pyspark.sql.functions import to_json, col, struct
 from pyspark.sql.types import MapType, StringType
 
 
-class ElasticsearchService():
+class ElasticsearchService(Elasticsearch):
     def __init__(self, es_nodes='localhost', es_port='9200', es_index='sec_filings'):
         self.es_nodes = es_nodes
         self.es_port = es_port
         self.es_index = es_index
+        super().__init__([{"host": self.es_nodes, "port": int(self.es_port), "scheme": "http"}])
+
         self.es_home = "/Users/rushilsheth/Documents/elasticsearch"  # Path to your Elasticsearch 
         self.es_bin = self.es_home + "/bin/elasticsearch"  # Path to the Elasticsearch executable
     
@@ -160,12 +162,11 @@ class ElasticsearchService():
         else:
             print("Elasticsearch process is not running.")
     
-    def search(self, query):
+    def searchwrapper(self, query):
         """
         Searches the Elasticsearch index for the given query.
         """
-        es = Elasticsearch([{"host": self.es_nodes, "port": int(self.es_port), "scheme": "http"}])
-        results = es.search(index=self.es_index, body=query)
+        results = self.search(index=self.es_index, body=query)
         return results
 
 class ElasticsearchDataLoader(DataLoader):

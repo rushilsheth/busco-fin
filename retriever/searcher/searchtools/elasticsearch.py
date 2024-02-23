@@ -43,7 +43,7 @@ class ElasticsearchSearchTool(SearchTool):
             }
             }
 
-        results = self.es_client.search(query=query_arg)
+        results = self.es_client.searchwrapper(query=query_arg)
         search_results: list[SearchResult] = []
         for result in results["hits"]["hits"]:
             if len(search_results) >= n_search_results_to_use:
