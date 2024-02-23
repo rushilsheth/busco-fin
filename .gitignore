@@ -3,4 +3,5 @@
 .ipynb_checkpoints/
 .htm
 venv/
-*/__pycache__/
+**/__pycache__/
+.jar
