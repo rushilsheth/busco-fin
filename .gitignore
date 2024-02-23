@@ -4,4 +4,4 @@
 .htm
 venv/
 **/__pycache__/
-.jar
+*.jar
