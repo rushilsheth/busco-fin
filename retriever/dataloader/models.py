@@ -1,4 +1,5 @@
 import os
+import json
 
 from abc import ABC, abstractmethod
 import dotenv
@@ -119,6 +120,9 @@ import os
 from langchain_community.document_loaders import UnstructuredHTMLLoader
 from langchain_community.document_transformers import Html2TextTransformer
 
+from pyspark.sql.functions import to_json, col, struct
+from pyspark.sql.types import MapType, StringType
+
 
 class ElasticsearchService():
     def __init__(self, es_nodes='localhost', es_port='9200', es_index='documents_index'):
@@ -187,7 +191,7 @@ class ElasticsearchDataLoader(DataLoader):
         }
         
         self.initialize_spark_session()
-        #self.start_and_prep_service()
+        self.start_and_prep_service()
     
     def initialize_spark_session(self):
         self.spark = SparkSession.builder \
@@ -202,7 +206,6 @@ class ElasticsearchDataLoader(DataLoader):
 
     def start_and_prep_service(self):
         self.es_client.start_elasticsearch()
-        self.es_client.create_index(self.index_name, self.mapping)
     
     def extract_metadata(self, file_path, doc_df, company_df):
         doc_row = doc_df.loc[doc_df['localFilePath'] == file_path]
@@ -210,7 +213,7 @@ class ElasticsearchDataLoader(DataLoader):
         metadata.update(company_df.loc[company_df['ticker'] == doc_row['ticker'].values[0]].to_dict(orient='records')[0])
         return metadata
 
-    def load_documents(self):
+    def load_documents_to_elasticsearch(self):
         # Load metadata CSVs
         doc_df = pd.read_csv(f'{self.base_dest}document_info.csv')
         company_df = pd.read_csv(f'{self.base_dest}companies_df.csv')
@@ -228,30 +231,41 @@ class ElasticsearchDataLoader(DataLoader):
                     # Convert HTML to text
                     html_text = self.html_to_text(file_path)
                     # Combine metadata and text content
-                    documents_data.append((metadata, html_text))
+                    documents_data.append((json.dumps(metadata), metadata['documentUrl'],html_text))
         
         # Convert list to RDD and then to DataFrame
         schema = StructType([
             StructField("metadata", StringType(), True),
+            StructField("documentUrl", StringType(), True),
             StructField("text", StringType(), True)
         ])
         rdd = self.spark.sparkContext.parallelize(documents_data)
         documents_df = self.spark.createDataFrame(rdd, schema)
-        return documents_df
-        # # Load the DataFrame to Elasticsearch
-        # self.load_data(documents_df)
-    
-    # add method to load data from edgar_docs to elasticsearch
-    def load_data_to_elasticsearch(self):
-        documents_info = pd.read_csv(os.path.join(self.base_dest, 'document_info.csv'))
-        documents_info = documents_info.to_dict(orient='records')
-        for document in documents_info:
-            self.es_client.es_process.index(index=self.index_name, body=document)
-        print("Data has been loaded into Elasticsearch.")
+        # Load the DataFrame to Elasticsearch
+        self.load_data(documents_df)
     
     def html_to_text(self, file_path):
         loader = UnstructuredHTMLLoader(file_path)
         doc = loader.load()
         html2text = Html2TextTransformer()
         docs_transformed = html2text.transform_documents(doc)
-        return docs_transformed[0].page_content
+        return docs_transformed[0]
+
+    def load_data(self, documents_df):
+        write_conf = {
+            "es.nodes": self.es_client.es_nodes,
+            "es.port": self.es_client.es_port,
+            "es.resource": self.index_name,
+            "es.mapping.id": "documentUrl",  # Use the document URL as the unique ID for Elasticsearch documents
+        }
+
+        # Write the DataFrame to Elasticsearch
+        documents_df.write.format(
+            "org.elasticsearch.spark.sql"
+        ).options(
+            **write_conf
+        ).mode(
+            "append" 
+        ).save()
+
+        logger.info("Data has been loaded into Elasticsearch.")
