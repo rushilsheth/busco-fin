@@ -1,6 +1,6 @@
 from typing import Optional
 from retriever.searcher.embedding_and_search_tool import SearchResult, SearchTool
-from retriever.dataloader.models import ElasticsearchService
+from dataloader.models import ElasticsearchService
 
 from retriever.util import get_logger
 
