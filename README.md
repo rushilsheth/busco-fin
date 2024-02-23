@@ -13,6 +13,7 @@ The core functionality includes:
 |--- | ---|
 |retriever | Contains the core search and retrieval logic using OpenAI's API.|
 |examples | Provides example notebooks and scripts showing how to use retriever with various search tools.|
+|dataloader| Contains code to populate datastores 
 
 Example notebooks shows an outline of the setup and objects to create.
 
