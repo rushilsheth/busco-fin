@@ -125,7 +125,7 @@ from pyspark.sql.types import MapType, StringType
 
 
 class ElasticsearchService():
-    def __init__(self, es_nodes='localhost', es_port='9200', es_index='documents_index'):
+    def __init__(self, es_nodes='localhost', es_port='9200', es_index='sec_filings'):
         self.es_nodes = es_nodes
         self.es_port = es_port
         self.es_index = es_index
@@ -143,12 +143,6 @@ class ElasticsearchService():
                 time.sleep(30)  # Wait for Elasticsearch to start
             except Exception as e:
                 print(f"Failed to start Elasticsearch: {e}")
-    
-    # is this necessary??
-    def create_index(self, index_name, mapping):
-        if not self.es_process.indices.exists(index=index_name):
-            self.es_process.indices.create(index=index_name, body=mapping, ignore=400)
-
 
     def stop_elasticsearch(self):
         """
@@ -165,12 +159,21 @@ class ElasticsearchService():
             print("Elasticsearch has been stopped.")
         else:
             print("Elasticsearch process is not running.")
+    
+    def search(self, query):
+        """
+        Searches the Elasticsearch index for the given query.
+        """
+        es = Elasticsearch([{"host": self.es_nodes, "port": int(self.es_port), "scheme": "http"}])
+        results = es.search(index=self.es_index, body=query)
+        return results
 
 class ElasticsearchDataLoader(DataLoader):
-    def __init__(self):
+    def __init__(self, index_name='sec_filings'):
         super().__init__()
-        self.index_name = 'sec_filings'
+        self.index_name = index_name
         self.es_client = ElasticsearchService(es_index=self.index_name)
+        self.index_name = self.es_client.es_index
         self.mapping = {
             "mappings": {
                 "properties": {
@@ -191,7 +194,7 @@ class ElasticsearchDataLoader(DataLoader):
         }
         
         self.initialize_spark_session()
-        self.start_and_prep_service()
+        self._start_and_prep_service()
     
     def initialize_spark_session(self):
         self.spark = SparkSession.builder \
@@ -204,7 +207,7 @@ class ElasticsearchDataLoader(DataLoader):
 
         time.sleep(10)  # Wait for the Elasticsearch container to start
 
-    def start_and_prep_service(self):
+    def _start_and_prep_service(self):
         self.es_client.start_elasticsearch()
     
     def extract_metadata(self, file_path, doc_df, company_df):
@@ -249,7 +252,7 @@ class ElasticsearchDataLoader(DataLoader):
         doc = loader.load()
         html2text = Html2TextTransformer()
         docs_transformed = html2text.transform_documents(doc)
-        return docs_transformed[0]
+        return docs_transformed[0].page_content
 
     def load_data(self, documents_df):
         write_conf = {
