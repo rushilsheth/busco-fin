@@ -31,18 +31,18 @@ class ElasticsearchSearchTool(SearchTool):
         query_arg = {
             "query": {
                 "match": {
-                "text": query
+                    "text": query,
                 }
             },
             "highlight": {
+                "max_analyzed_offset": 999999,
                 "fields": {
-                "text": {
-                    "fragment_size": 400,
+                    "text": {
+                        "fragment_size": 400,
+                    }
                 }
-                }
-            }
-            }
-
+            },
+        }
         results = self.es_client.searchwrapper(query=query_arg)
         search_results: list[SearchResult] = []
         for result in results["hits"]["hits"]:

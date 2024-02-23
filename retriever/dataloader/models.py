@@ -247,6 +247,16 @@ class ElasticsearchDataLoader(DataLoader):
         documents_df = self.spark.createDataFrame(rdd, schema)
         # Load the DataFrame to Elasticsearch
         self.load_data(documents_df)
+
+        # # adjust max_analyzed_offset to avoid Elasticsearch error
+        # response = self.es_client.indices.put_settings(
+        #     index=self.es_index,
+        #     body={
+        #         "index": {
+        #             "highlight.max_analyzed_offset": 1000000
+        #         }
+        #     }
+        # )
     
     def html_to_text(self, file_path):
         loader = UnstructuredHTMLLoader(file_path)
