@@ -28,6 +28,7 @@ The alternative to RAG technique is utilizing the LLM to help create search quer
     - skeleton code in retriever/searcher/searchtools/vectorstores and latter half of retriever/searcher/embedding_and_search_tool.py
 - containerize and locally host via streamlit
 - improve elasticsearch and use metadata of documents. add related companies to document metadata via NER on document text
+- utilize Neo4j embedding feature for knowledge graph
 - include a rerank function (cohere, ColBERT, self fine-tuned)
 - add visibility into retrieval scores via "Judge" model scoring, utilizing Arize Phoenix
 
